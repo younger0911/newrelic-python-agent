@@ -22,14 +22,48 @@ def remove_from_cache_callback(task):
 
 
 def wrap_create_task(task):
+    # Avoid double-linking when multiple instrumentation paths apply.
+    try:
+        if getattr(task, "_nr_trace_cache_linked", False):
+            return task
+        task._nr_trace_cache_linked = True
+    except Exception:
+        # Some C-accelerated task types may not allow setting attributes.
+        pass
+
     trace_cache().task_start(task)
-    task.add_done_callback(remove_from_cache_callback)
+    try:
+        task.add_done_callback(remove_from_cache_callback)
+    except Exception:
+        pass
     return task
 
 
 def _instrument_event_loop(loop):
-    if loop and hasattr(loop, "create_task") and not hasattr(loop.create_task, "__wrapped__"):
+    if not loop or not hasattr(loop, "create_task"):
+        return
+
+    # Prefer instance-level wrapping, but some event loops (e.g. uvloop) may
+    # not allow instance attribute assignment. In that case, fall back to
+    # wrapping the class method.
+    try:
+        if hasattr(loop.create_task, "__wrapped__"):
+            return
+    except Exception:
+        pass
+
+    try:
         wrap_out_function(loop, "create_task", wrap_create_task)
+        return
+    except Exception:
+        pass
+
+    try:
+        loop_cls = type(loop)
+        if hasattr(loop_cls, "create_task") and not hasattr(loop_cls.create_task, "__wrapped__"):
+            wrap_out_function(loop_cls, "create_task", wrap_create_task)
+    except Exception:
+        pass
 
 
 def _bind_set_event_loop(loop, *args, **kwargs):

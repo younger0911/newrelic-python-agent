@@ -277,6 +277,32 @@ def test_two_transactions_with_loop_factory(trace, loop_factory):
 
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="loop_factory/asyncio.Runner is not available")
 @pytest.mark.parametrize("loop_factory", loop_factories())
+@validate_transaction_metrics("loop_create_task", background_task=True)
+def test_context_propagation_loop_create_task_with_loop_factory(loop_factory):
+    import asyncio
+
+    @background_task(name="loop_create_task")
+    async def main():
+        trace = current_trace()
+        assert trace is not None
+
+        loop = asyncio.get_running_loop()
+
+        async def child_task():
+            # This specifically verifies propagation for tasks created via
+            # loop.create_task(), which can differ for C-accelerated loops
+            # like uvloop.
+            assert current_trace() is trace
+
+        task = loop.create_task(child_task())
+        await task
+
+    with asyncio.Runner(loop_factory=loop_factory) as runner:
+        runner.run(main())
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="loop_factory/asyncio.Runner is not available")
+@pytest.mark.parametrize("loop_factory", loop_factories())
 @validate_transaction_metrics(
     "test_context_propagation:test_context_propagation_with_loop_factory",
     background_task=True,
