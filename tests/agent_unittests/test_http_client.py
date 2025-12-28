@@ -15,7 +15,6 @@
 import base64
 import json
 import ssl
-import sys
 import zlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from io import StringIO
@@ -42,29 +41,18 @@ from newrelic.packages.urllib3.util import Url
 
 def echo_full_request(self):
     self.server.connections.append(self.connection)
-    request_line = str(self.requestline)
-    headers = list(self.headers.items())
-
-    content_length = int(self.headers.get("Content-Length", 0))
-    if content_length:
-        body = self.rfile.read(content_length).hex()
-    else:
-        body = ""
-
-    payload = [request_line, headers, body]
-    payload = json.dumps(payload).encode("utf-8")
-
+    request_line = str(self.requestline).encode("utf-8")
+    headers = "\n".join(f"{k.lower()}: {v}" for k, v in self.headers.items())
     self.send_response(200)
     self.end_headers()
-    self.wfile.write(payload)
-
-
-def decode_payload(data):
-    if isinstance(data, bytes):
-        data = data.decode("utf-8")
-    payload = json.loads(data)
-    payload[2] = bytes.fromhex(payload[2])  # Convert body back to bytes
-    return payload
+    self.wfile.write(request_line)
+    self.wfile.write(b"\n")
+    self.wfile.write(headers.strip().encode("utf-8"))
+    self.wfile.write(b"\n")
+    content_length = int(self.headers.get("Content-Length", 0))
+    if content_length:
+        data = self.rfile.read(content_length)
+        self.wfile.write(data)
 
 
 class InsecureServer(MockExternalHTTPServer):
@@ -168,23 +156,28 @@ def test_http_no_payload(server, method):
         status, data = client.send_request(method=method, headers={"foo": "bar"})
 
     assert status == 200
-    request_line, headers, _payload = decode_payload(data)
+    data = ensure_str(data)
+    data = data.split("\n")
 
     # Verify connection has been closed
     assert client._connection_attr is None
     assert connection.pool is None
 
     # Verify request line
-    assert request_line.startswith(f"{method} /agent_listener/invoke_raw_method ")
+    assert data[0].startswith(f"{method} /agent_listener/invoke_raw_method ")
 
     # Verify headers
     user_agent_header = ""
     foo_header = ""
 
-    for key, value in headers:
-        if key.lower() == "user-agent":
+    for header in data[1:-1]:
+        if header.lower().startswith("user-agent:"):
+            _, value = header.split(":", 1)
+            value = value.strip()
             user_agent_header = value
-        if key.lower() == "foo":
+        elif header.startswith("foo:"):
+            _, value = header.split(":", 1)
+            value = value.strip()
             foo_header = value
 
     assert user_agent_header.startswith("NewRelic-PythonAgent/")
@@ -271,7 +264,8 @@ def test_http_payload_compression(server, client_cls, method, threshold):
             status, data = client.send_request(payload=payload, params={"method": "method2"})
 
     assert status == 200
-    _request_line, headers, sent_payload = decode_payload(data)
+    data = data.split(b"\n")
+    sent_payload = data[-1]
     payload_byte_len = len(sent_payload)
     internal_metrics = dict(internal_metrics.metrics())
     if client_cls is ApplicationModeClient:
@@ -295,7 +289,7 @@ def test_http_payload_compression(server, client_cls, method, threshold):
         assert not internal_metrics
 
     if threshold < 20:
-        expected_content_encoding = method
+        expected_content_encoding = method.encode("utf-8")
         assert sent_payload != payload
         if method == "deflate":
             sent_payload = zlib.decompress(sent_payload)
@@ -304,11 +298,12 @@ def test_http_payload_compression(server, client_cls, method, threshold):
             sent_payload = decompressor.decompress(sent_payload)
             sent_payload += decompressor.flush()
     else:
-        expected_content_encoding = "Identity"
+        expected_content_encoding = b"Identity"
 
-    for key, value in headers:
-        if key.lower() == "content-encoding":
-            content_encoding = value
+    for header in data[1:-1]:
+        if header.lower().startswith(b"content-encoding"):
+            _, content_encoding = header.split(b":", 1)
+            content_encoding = content_encoding.strip()
             break
     else:
         raise AssertionError("Missing content-encoding header")
@@ -319,7 +314,7 @@ def test_http_payload_compression(server, client_cls, method, threshold):
 
 def test_cert_path(server):
     with HttpClient("localhost", server.port, ca_bundle_path=CERT_PATH) as client:
-        client.send_request()
+        status, data = client.send_request()
 
 
 @pytest.mark.parametrize("system_certs_available", (True, False))
@@ -327,11 +322,9 @@ def test_default_cert_path(monkeypatch, system_certs_available):
     if system_certs_available:
         cert_file = "foo"
         ca_path = "/usr/certs"
-        system_certs = [{"issuer": "Test CA"}]  # Poorly faked certs
     else:
         cert_file = None
         ca_path = None
-        system_certs = []
 
     class DefaultVerifyPaths:
         cafile = cert_file
@@ -340,13 +333,7 @@ def test_default_cert_path(monkeypatch, system_certs_available):
         def __init__(self, *args, **kwargs):
             pass
 
-    def get_ca_certs(purpose=None):
-        return system_certs
-
-    monkeypatch.setattr(ssl, "DefaultVerifyPaths", DefaultVerifyPaths)  # Bypass OpenSSL default certs
-    if sys.platform == "win32":
-        monkeypatch.setattr(ssl.SSLContext, "get_ca_certs", get_ca_certs)  # Bypass Windows default certs
-
+    monkeypatch.setattr(ssl, "DefaultVerifyPaths", DefaultVerifyPaths)
     internal_metrics = CustomMetrics()
     with InternalTraceContext(internal_metrics):
         client = HttpClient("localhost", ca_bundle_path=None)
@@ -377,13 +364,16 @@ def test_ssl_via_ssl_proxy(server, auth):
         status, data = client.send_request()
 
     assert status == 200
-    request_line, headers, _payload = decode_payload(data)
-    assert request_line.startswith("POST https://localhost:1/agent_listener/invoke_raw_method ")
+    data = data.decode("utf-8")
+    data = data.split("\n")
+    assert data[0].startswith("POST https://localhost:1/agent_listener/invoke_raw_method ")
 
     proxy_auth = None
-    for key, value in headers:
-        if key.lower() == "proxy-authorization":
-            proxy_auth = value
+    for header in data[1:-1]:
+        if header.lower().startswith("proxy-authorization"):
+            _, proxy_auth = header.split(":", 1)
+            proxy_auth = proxy_auth.strip()
+            break
 
     if proxy_user:
         auth_expected = proxy_user
@@ -409,8 +399,9 @@ def test_non_ssl_via_ssl_proxy(server):
         status, data = client.send_request()
 
     assert status == 200
-    request_line, _headers, _payload = decode_payload(data)
-    assert request_line.startswith("POST http://localhost:1/agent_listener/invoke_raw_method ")
+    data = data.decode("utf-8")
+    data = data.split("\n")
+    assert data[0].startswith("POST http://localhost:1/agent_listener/invoke_raw_method ")
 
     assert server.httpd.connect_host is None
 
@@ -422,8 +413,9 @@ def test_non_ssl_via_non_ssl_proxy(insecure_server):
         status, data = client.send_request()
 
     assert status == 200
-    request_line, _headers, _payload = decode_payload(data)
-    assert request_line.startswith("POST http://localhost:1/agent_listener/invoke_raw_method ")
+    data = data.decode("utf-8")
+    data = data.split("\n")
+    assert data[0].startswith("POST http://localhost:1/agent_listener/invoke_raw_method ")
 
     assert insecure_server.httpd.connect_host is None
 

@@ -12,13 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Use of these from this module will be deprecated.
 
-def _get_llm_metadata(transaction):
-    # Grab LLM-related custom attributes off of the transaction to store as metadata on LLM events
-    custom_attrs_dict = transaction._custom_params
-    llm_metadata_dict = {key: value for key, value in custom_attrs_dict.items() if key.startswith("llm.")}
-    llm_context_attrs = getattr(transaction, "_llm_context_attrs", None)
-    if llm_context_attrs:
-        llm_metadata_dict.update(llm_context_attrs)
-
-    return llm_metadata_dict
+from newrelic.common.object_wrapper import PreFunctionWrapper, pre_function, wrap_pre_function  # noqa: F401

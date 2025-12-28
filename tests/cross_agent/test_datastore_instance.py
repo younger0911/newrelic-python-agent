@@ -40,7 +40,7 @@ _parameters = ",".join(_parameters_list)
 
 
 def _load_tests():
-    with FIXTURE.open(encoding="utf-8") as fh:
+    with FIXTURE.open() as fh:
         js = fh.read()
     return json.loads(js)
 

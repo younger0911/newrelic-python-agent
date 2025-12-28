@@ -13,21 +13,30 @@
 # limitations under the License.
 
 import functools
+import warnings
 
 from newrelic.api.time_trace import current_trace, notice_error
-from newrelic.common.async_wrapper import async_wrapper as get_async_wrapper
 from newrelic.common.object_wrapper import FunctionWrapper, wrap_object
 
 
 class ErrorTrace:
-    def __init__(self, ignore=None, expected=None, status_code=None, parent=None):
+    def __init__(self, ignore_errors=None, ignore=None, expected=None, status_code=None, parent=None):
+        if ignore_errors is None:
+            ignore_errors = []
         if parent is None:
             parent = current_trace()
 
         self._transaction = parent and parent.transaction
-        self._ignore = ignore
+        self._ignore = ignore if ignore is not None else ignore_errors
         self._expected = expected
         self._status_code = status_code
+
+        if ignore_errors:
+            warnings.warn(
+                ("The ignore_errors argument is deprecated. Please use the new ignore argument instead."),
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
     def __enter__(self):
         return self
@@ -44,36 +53,33 @@ class ErrorTrace:
         )
 
 
-def ErrorTraceWrapper(wrapped, ignore=None, expected=None, status_code=None, async_wrapper=None):
-    def literal_wrapper(wrapped, instance, args, kwargs):
-        # Determine if the wrapped function is async or sync
-        wrapper = async_wrapper if async_wrapper is not None else get_async_wrapper(wrapped)
-        # Sync function path
-        if not wrapper:
-            parent = current_trace()
-            if not parent:
-                # No active tracing context so just call the wrapped function directly
-                return wrapped(*args, **kwargs)
-        # Async function path
-        else:
-            # For async functions, the async wrapper will handle trace context propagation
-            parent = None
+def ErrorTraceWrapper(wrapped, ignore_errors=None, ignore=None, expected=None, status_code=None):
+    if ignore_errors is None:
+        ignore_errors = []
 
-        trace = ErrorTrace(ignore, expected, status_code, parent=parent)
+    def wrapper(wrapped, instance, args, kwargs):
+        parent = current_trace()
 
-        if wrapper:
-            # The async wrapper handles the context management for us
-            return wrapper(wrapped, trace)(*args, **kwargs)
-
-        with trace:
+        if parent is None:
             return wrapped(*args, **kwargs)
 
-    return FunctionWrapper(wrapped, literal_wrapper)
+        with ErrorTrace(ignore_errors, ignore, expected, status_code, parent=parent):
+            return wrapped(*args, **kwargs)
+
+    return FunctionWrapper(wrapped, wrapper)
 
 
-def error_trace(ignore=None, expected=None, status_code=None):
-    return functools.partial(ErrorTraceWrapper, ignore=ignore, expected=expected, status_code=status_code)
+def error_trace(ignore_errors=None, ignore=None, expected=None, status_code=None):
+    if ignore_errors is None:
+        ignore_errors = []
+
+    return functools.partial(
+        ErrorTraceWrapper, ignore_errors=ignore_errors, ignore=ignore, expected=expected, status_code=status_code
+    )
 
 
-def wrap_error_trace(module, object_path, ignore=None, expected=None, status_code=None):
-    wrap_object(module, object_path, ErrorTraceWrapper, (ignore, expected, status_code))
+def wrap_error_trace(module, object_path, ignore_errors=None, ignore=None, expected=None, status_code=None):
+    if ignore_errors is None:
+        ignore_errors = []
+
+    wrap_object(module, object_path, ErrorTraceWrapper, (ignore_errors, ignore, expected, status_code))

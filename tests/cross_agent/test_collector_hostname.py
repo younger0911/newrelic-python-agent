@@ -16,11 +16,11 @@ import json
 import multiprocessing
 import os
 import sys
+import tempfile
 from importlib import reload
 from pathlib import Path
 
 import pytest
-from testing_support.util import NamedTemporaryFile
 
 FIXTURE = Path(__file__).parent / "fixtures" / "collector_hostname.json"
 
@@ -29,7 +29,7 @@ _parameters = ",".join(_parameters_list)
 
 
 def _load_tests():
-    with FIXTURE.open(encoding="utf-8") as fh:
+    with FIXTURE.open() as fh:
         js = fh.read()
     return json.loads(js)
 
@@ -70,12 +70,11 @@ def _test_collector_hostname(
         reload(core_config)
         reload(config)
 
-        with NamedTemporaryFile() as ini_file:
-            ini_file.write(ini_contents.encode("utf-8"))
-            ini_file.seek(0)
+        ini_file = tempfile.NamedTemporaryFile()
+        ini_file.write(ini_contents.encode("utf-8"))
+        ini_file.seek(0)
 
-            config.initialize(ini_file.name)
-
+        config.initialize(ini_file.name)
         settings = core_config.global_settings()
         assert settings.host == hostname
 
@@ -108,6 +107,6 @@ def test_collector_hostname(config_file_key, config_override_host, env_key, env_
         },
     )
     process.start()
-    result = queue.get(timeout=15)
+    result = queue.get(timeout=2)
 
     assert result == "PASS"

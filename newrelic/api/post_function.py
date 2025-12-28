@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-blank_issues_enabled: false
-contact_links:
-  - name: Troubleshooting
-    url: https://github.com/newrelic/newrelic-python-agent/blob/main/README.md#support
-    about: checkout the README for troubleshooting directions
+# Use of these from this module will be deprecated.
+
+from newrelic.common.object_wrapper import PostFunctionWrapper, post_function, wrap_post_function  # noqa: F401

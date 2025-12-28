@@ -47,20 +47,14 @@ def test_quoting_styles(sqlite3_cursor, sql, obfuscated):
     test()
 
 
-def test_named_parameters(sqlite3_cursor):
-    sql = obfuscated = "INSERT INTO a VALUES (:1, :2)"
-
-    @validate_sql_obfuscation([obfuscated])
-    @background_task()
-    def test():
-        sqlite3_cursor.executemany(sql, [{"1": "hello", "2": "world"}, {"1": "love", "2": "python"}])
-
-    test()
+_parameter_tests = [
+    ("INSERT INTO a VALUES (:1, :2)", "INSERT INTO a VALUES (:1, :2)"),
+    ("INSERT INTO a VALUES (?, ?)", "INSERT INTO a VALUES (?, ?)"),
+]
 
 
-def test_sequence_parameters(sqlite3_cursor):
-    sql = obfuscated = "INSERT INTO a VALUES (?, ?)"
-
+@pytest.mark.parametrize("sql,obfuscated", _parameter_tests)
+def test_parameters(sqlite3_cursor, sql, obfuscated):
     @validate_sql_obfuscation([obfuscated])
     @background_task()
     def test():

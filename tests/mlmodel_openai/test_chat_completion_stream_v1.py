@@ -54,7 +54,6 @@ chat_completion_recorded_events = [
         {"type": "LlmChatCompletionSummary"},
         {
             "id": None,  # UUID that varies with each run
-            "timestamp": None,
             "llm.conversation_id": "my-awesome-id",
             "llm.foo": "bar",
             "span_id": None,
@@ -84,7 +83,6 @@ chat_completion_recorded_events = [
         {"type": "LlmChatCompletionMessage"},
         {
             "id": "chatcmpl-8TJ9dS50zgQM7XicE8PLnCyEihRug-0",
-            "timestamp": None,
             "llm.conversation_id": "my-awesome-id",
             "llm.foo": "bar",
             "request_id": "f8d0f53b6881c5c0a3698e55f8f410ac",
@@ -103,7 +101,6 @@ chat_completion_recorded_events = [
         {"type": "LlmChatCompletionMessage"},
         {
             "id": "chatcmpl-8TJ9dS50zgQM7XicE8PLnCyEihRug-1",
-            "timestamp": None,
             "llm.conversation_id": "my-awesome-id",
             "llm.foo": "bar",
             "request_id": "f8d0f53b6881c5c0a3698e55f8f410ac",
@@ -122,7 +119,6 @@ chat_completion_recorded_events = [
         {"type": "LlmChatCompletionMessage"},
         {
             "id": "chatcmpl-8TJ9dS50zgQM7XicE8PLnCyEihRug-2",
-            "timestamp": None,
             "llm.conversation_id": "my-awesome-id",
             "llm.foo": "bar",
             "request_id": "f8d0f53b6881c5c0a3698e55f8f410ac",

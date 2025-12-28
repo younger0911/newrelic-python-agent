@@ -11,3 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# Use of these from this module will be deprecated.
+
+from newrelic.common.object_wrapper import OutFunctionWrapper, out_function, wrap_out_function  # noqa: F401

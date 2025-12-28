@@ -16,21 +16,9 @@
 
 /* ------------------------------------------------------------------------- */
 
+#include <sys/time.h>
 #include <Python.h>
 #include <pythread.h>
-
-#ifdef _WIN32
-
-    #include <windows.h>
-    #include <minwinbase.h>
-    #include <sysinfoapi.h>
-    #include <winnt.h>
-
-#else
-
-    #include <sys/time.h>
-
-#endif
 
 #ifndef PyVarObject_HEAD_INIT
 #define PyVarObject_HEAD_INIT(type, size) PyObject_HEAD_INIT(type) size,
@@ -46,39 +34,20 @@ typedef struct {
     long long time_last_fetched;
 } UtilizationCount;
 
-static void get_current_time_usecs(long long *ts)
-{
-    #ifdef _WIN32
-        FILETIME ft;
-        ULARGE_INTEGER t;
-
-        // Most accurate timestamp available on Windows.
-        // Measured in 100ns intervals since January 1, 1601 (UTC).
-        GetSystemTimePreciseAsFileTime(&ft);
-        
-        // Convert FILETIME to a 64-bit integer
-        t.LowPart = ft.dwLowDateTime;
-        t.HighPart = ft.dwHighDateTime;
-        
-        // Convert from 100ns intervals to microseconds
-        *ts = (long long) (t.QuadPart / 10);
-    #else
-        struct timeval t;
-
-        gettimeofday(&t, NULL);
-        *ts = (t.tv_sec * 1000000) + t.tv_usec;
-    #endif
-}
-
-
 static void reset_utilization_count(UtilizationCount *self)
 {
+    struct timeval t;
+
     self->currently_active = 0;
 
     self->utilization_current = 0.0;
     self->utilization_previous = 0.0;
 
-    get_current_time_usecs(&self->time_last_updated);
+    gettimeofday(&t, NULL);
+
+    self->time_last_updated = t.tv_sec * 1000000;
+    self->time_last_updated += t.tv_usec;
+
     self->time_last_fetched = self->time_last_updated;
 }
 
@@ -87,7 +56,12 @@ static double adjust_utilization_count(UtilizationCount *self, int adjustment)
     long long current_time;
     double utilization = self->utilization_current;
 
-    get_current_time_usecs(&current_time);
+    struct timeval t;
+
+    gettimeofday(&t, NULL);
+
+    current_time = t.tv_sec * 1000000;
+    current_time += t.tv_usec;
 
     utilization = (current_time - self->time_last_updated) / 1000000.0;
 
@@ -130,8 +104,8 @@ static double fetch_utilization_count(UtilizationCount *self)
 
     time_last_updated = self->time_last_updated;
 
-    // Convert to interval in seconds
-    elapsed_time = (self->time_last_updated - time_last_fetched) / 1000000.0;
+    elapsed_time = self->time_last_updated - time_last_fetched;
+    elapsed_time /= 1000000.0;
 
     if (elapsed_time <= 0)
         return 0.0;
@@ -236,7 +210,11 @@ static double NRUtilization_adjust(NRUtilizationObject *self, int adjustment)
     long long now;
     double utilization = self->requests_utilization_count;
 
-    get_current_time_usecs(&now);
+    struct timeval t;
+
+    gettimeofday(&t, NULL);
+
+    now = ((long long)t.tv_sec) * 1000000 + ((long long)t.tv_usec);
 
     if (self->requests_utilization_last != 0.0) {
         utilization = (now - self->requests_utilization_last) / 1000000.0;

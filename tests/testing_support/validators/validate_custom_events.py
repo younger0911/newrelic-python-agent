@@ -14,7 +14,6 @@
 
 import copy
 import time
-from pprint import pformat
 
 from newrelic.common.object_wrapper import function_wrapper, transient_function_wrapper
 from testing_support.fixtures import catch_background_exceptions
@@ -101,8 +100,8 @@ def _check_event_attributes(expected, captured, mismatches):
 def _event_details(matching_custom_events, captured, mismatches):
     details = [
         f"matching_custom_events={matching_custom_events}",
-        f"mismatches={pformat(mismatches)}",
-        f"captured_events={pformat(captured)}",
+        f"mismatches={mismatches}",
+        f"captured_events={captured}",
     ]
 
     return "\n".join(details)

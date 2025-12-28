@@ -27,7 +27,7 @@ from newrelic.api.external_trace import external_trace
 from newrelic.api.function_trace import FunctionTrace, function_trace
 from newrelic.api.memcache_trace import memcache_trace
 from newrelic.api.message_trace import message_trace
-from newrelic.api.time_trace import current_trace
+from newrelic.api.time_trace import current_trace, get_trace_linking_metadata
 from newrelic.core.config import global_settings
 from newrelic.core.trace_cache import trace_cache
 
@@ -35,33 +35,9 @@ from newrelic.core.trace_cache import trace_cache
 try:
     import uvloop
 
-    loop_policies = (pytest.param(None, id="asyncio"), pytest.param(uvloop.EventLoopPolicy(), id="uvloop"))
-    uvloop_factory = (pytest.param(uvloop.new_event_loop, id="uvloop"), pytest.param(None, id="None"))
+    loop_policies = (None, uvloop.EventLoopPolicy())
 except ImportError:
-    loop_policies = (pytest.param(None, id="asyncio"),)
-    uvloop_factory = (pytest.param(None, id="None"),)
-
-
-def loop_factories():
-    import asyncio
-
-    if sys.platform == "win32":
-        return (pytest.param(asyncio.ProactorEventLoop, id="asyncio.ProactorEventLoop"), *uvloop_factory)
-    else:
-        return (pytest.param(asyncio.SelectorEventLoop, id="asyncio.SelectorEventLoop"), *uvloop_factory)
-
-
-@pytest.fixture(autouse=True)
-def reset_event_loop():
-    try:
-        from asyncio import set_event_loop, set_event_loop_policy
-
-        # Remove the loop policy to avoid side effects
-        set_event_loop_policy(None)
-    except ImportError:
-        from asyncio import set_event_loop
-
-    set_event_loop(None)
+    loop_policies = (None,)
 
 
 @function_trace("waiter3")
@@ -117,7 +93,6 @@ async def _test(asyncio, schedule, nr_enabled=True):
     return trace
 
 
-@pytest.mark.skipif(sys.version_info >= (3, 16), reason="loop_policy is not available")
 @pytest.mark.parametrize("loop_policy", loop_policies)
 @pytest.mark.parametrize("schedule", ("create_task", "ensure_future"))
 @validate_transaction_metrics(
@@ -171,6 +146,38 @@ def test_nr_disabled(event_loop):
     assert not exceptions, exceptions
 
 
+@pytest.mark.parametrize("loop_policy", loop_policies)
+def test_trace_linking_metadata_available_after_transaction_exit(event_loop, loop_policy):
+    """If a task is scheduled during an active trace but runs after the
+    originating transaction has exited, the task should still be able to
+    retrieve the same trace/span ids for linking purposes.
+    """
+    import asyncio
+
+    asyncio.set_event_loop_policy(loop_policy)
+
+    schedule = getattr(asyncio, "create_task", None) or asyncio.ensure_future
+
+    async def bg(event):
+        await event.wait()
+        return get_trace_linking_metadata()
+
+    async def handler():
+        event = asyncio.Event()
+        with BackgroundTask(application(), "fg"):
+            with FunctionTrace("fg"):
+                expected = get_trace_linking_metadata()
+                t = schedule(bg(event))
+
+        # Ensure the originating transaction has exited before the task proceeds.
+        event.set()
+        got = await t
+        return expected, got
+
+    expected, got = event_loop.run_until_complete(handler())
+    assert got == expected
+
+
 @pytest.mark.parametrize(
     "trace",
     [
@@ -182,18 +189,15 @@ def test_nr_disabled(event_loop):
         memcache_trace("cmd"),
     ],
 )
-def test_two_transactions_with_global_event_loop(event_loop, trace):
+def test_two_transactions(event_loop, trace):
     """
     Instantiate a coroutine in one transaction and await it in
     another. This should not cause any errors.
-    This uses the global event loop policy, which has been deprecated
-    since Python 3.11 and is scheduled for removal in Python 3.16.
     """
     import asyncio
 
     tasks = []
 
-    asyncio.set_event_loop(event_loop)
     ready = asyncio.Event()
     done = asyncio.Event()
 
@@ -222,104 +226,11 @@ def test_two_transactions_with_global_event_loop(event_loop, trace):
     if sys.version_info >= (3, 10, 0):
         afut = asyncio.ensure_future(create_coro(), loop=event_loop)
         bfut = asyncio.ensure_future(await_task(), loop=event_loop)
+        event_loop.run_until_complete(asyncio.gather(afut, bfut))
     else:
         afut = asyncio.ensure_future(create_coro())
         bfut = asyncio.ensure_future(await_task())
-
-    event_loop.run_until_complete(asyncio.gather(afut, bfut))
-
-
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="asyncio.Runner is not available")
-@validate_transaction_metrics("await_task", background_task=True)
-@validate_transaction_metrics("create_coro", background_task=True, index=-2)
-@pytest.mark.parametrize("loop_factory", loop_factories())
-@pytest.mark.parametrize(
-    "trace",
-    [
-        function_trace(name="simple_gen"),
-        external_trace(library="lib", url="http://foo.com"),
-        database_trace("select * from foo"),
-        datastore_trace("lib", "foo", "bar"),
-        message_trace("lib", "op", "typ", "name"),
-        memcache_trace("cmd"),
-    ],
-)
-def test_two_transactions_with_loop_factory(trace, loop_factory):
-    """
-    Instantiate a coroutine in one transaction and await it in
-    another. This should not cause any errors.
-    Starting in Python 3.11, the asyncio.Runner class was added
-    as well as the loop_factory parameter.  The loop_factory
-    parameter provides a replacement for loop policies (which
-    are scheduled for removal in Python 3.16).
-    """
-    import asyncio
-
-    @trace
-    async def task():
-        pass
-
-    @background_task(name="create_coro")
-    async def create_coro():
-        return asyncio.create_task(task())
-
-    @background_task(name="await_task")
-    async def await_task(task_to_await):
-        return await task_to_await
-
-    async def _main():
-        _task = await create_coro()
-        return await await_task(_task)
-
-    with asyncio.Runner(loop_factory=loop_factory) as runner:
-        runner.run(_main())
-
-
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="loop_factory/asyncio.Runner is not available")
-@pytest.mark.parametrize("loop_factory", loop_factories())
-@validate_transaction_metrics(
-    "test_context_propagation:test_context_propagation_with_loop_factory",
-    background_task=True,
-    scoped_metrics=(("Function/waiter2", 2), ("Function/waiter3", 2)),
-)
-@background_task()
-def test_context_propagation_with_loop_factory(loop_factory):
-    import asyncio
-
-    exceptions = []
-
-    def handle_exception(loop, context):
-        exceptions.append(context)
-
-        # Call default handler for standard logging
-        loop.default_exception_handler(context)
-
-    async def subtask():
-        with FunctionTrace(name="waiter2", terminal=True):
-            pass
-
-        await child()
-
-    async def _task(trace):
-        assert current_trace() == trace
-
-        await subtask()
-
-    trace = current_trace()
-
-    with asyncio.Runner(loop_factory=loop_factory) as runner:
-        assert trace == current_trace()
-        runner._loop.set_exception_handler(handle_exception)
-        runner.run(_task(trace))
-        runner.run(_task(trace))
-
-    # The agent should have removed all traces from the cache since
-    # run_until_complete has terminated (all callbacks scheduled inside the
-    # task have run)
-    assert len(trace_cache()) == 1  # Sentinel is all that remains
-
-    # # Assert that no exceptions have occurred
-    assert not exceptions, exceptions
+        asyncio.get_event_loop().run_until_complete(asyncio.gather(afut, bfut))
 
 
 # Sentinel left in cache transaction exited

@@ -28,9 +28,7 @@ def validate_transaction_error_event_count(num_errors=1):
             raise
         else:
             error_events = list(instance.error_events)
-            assert len(error_events) == num_errors, (
-                f"Expected: {num_errors}, Got: {len(error_events)}. Errors: {error_events}"
-            )
+            assert len(error_events) == num_errors
 
         return result
 

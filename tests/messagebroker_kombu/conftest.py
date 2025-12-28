@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+import pickle
 import uuid
 
 import kombu
@@ -107,7 +109,7 @@ def consumer_validate_dt(producer, consumer_connection, queue, consume_validate_
 def consume(events):
     def _consume(body, message):
         message.ack()
-        events.append({"body": body, "routing_key": message.delivery_info["routing_key"], "message": message})
+        events.append({"body": body, "routing_key": message.delivery_info["routing_key"]})
 
     return _consume
 
@@ -116,7 +118,7 @@ def consume(events):
 def consume_error(events):
     def _consume(body, message):
         message.ack()
-        events.append({"body": body, "routing_key": message.delivery_info["routing_key"], "message": message})
+        events.append({"body": body, "routing_key": message.delivery_info["routing_key"]})
         raise RuntimeError("Error in consumer callback")
 
     return _consume
@@ -133,7 +135,7 @@ def consume_validate_dt(events, transport_type):
         txn._test_request_headers = message.headers
 
         message.ack()
-        events.append({"body": body, "routing_key": message.delivery_info["routing_key"], "message": message})
+        events.append({"body": body, "routing_key": message.delivery_info["routing_key"]})
 
     return _consume
 

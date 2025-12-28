@@ -56,8 +56,8 @@ def app(request):
     return request.param
 
 
-@pytest.fixture(params=["asyncio", "uvloop", "none"], ids=["asyncio", "uvloop", "none"])
-def port(app, request):
+@pytest.fixture
+def port(app):
     port = get_open_port()
 
     loops = []
@@ -72,7 +72,7 @@ def port(app, request):
         async def on_tick():
             on_tick_sync()
 
-        config = Config(app, host="127.0.0.1", port=port, loop=request.param)
+        config = Config(app, host="127.0.0.1", port=port, loop="asyncio")
         config.callback_notify = on_tick
         config.log_config = {"version": 1}
         config.disable_lifespan = True

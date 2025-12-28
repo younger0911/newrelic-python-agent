@@ -18,12 +18,14 @@ import random
 import sys
 import time
 import traceback
+import warnings
 
 from newrelic.api.settings import STRIP_EXCEPTION_MESSAGE
 from newrelic.common.object_names import parse_exc_info
 from newrelic.core.attribute import MAX_NUM_USER_ATTRIBUTES, process_user_attribute
 from newrelic.core.code_level_metrics import extract_code_from_callable, extract_code_from_traceback
 from newrelic.core.config import is_expected_error, should_ignore_error
+from newrelic.core.trace_cache import current_task as _current_task
 from newrelic.core.trace_cache import trace_cache
 
 _logger = logging.getLogger(__name__)
@@ -252,7 +254,7 @@ class TimeTrace:
         if getattr(value, "_nr_ignored", None):
             return
 
-        _module, name, fullnames, message_raw = parse_exc_info((exc, value, tb))
+        module, name, fullnames, message_raw = parse_exc_info((exc, value, tb))
         fullname = fullnames[0]
 
         # In case message is in JSON format for OpenAI models
@@ -448,6 +450,16 @@ class TimeTrace:
                 settings, fullname, message, is_expected, error_group_name, custom_params, self.guid, tb, source=source
             )
 
+    def record_exception(self, exc_info=None, params=None, ignore_errors=None):
+        # Deprecation Warning
+        warnings.warn(
+            ("The record_exception function is deprecated. Please use the new api named notice_error instead."),
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+        self.notice_error(error=exc_info, attributes=params, ignore=ignore_errors)
+
     def _add_agent_attribute(self, key, value):
         self.agent_attributes[key] = value
 
@@ -504,7 +516,7 @@ class TimeTrace:
         exc_data = self.exc_data
         self.exc_data = (None, None, None)
 
-        # Observe errors on the span only if notice_error hasn't been
+        # Observe errors on the span only if record_exception hasn't been
         # called already
         if exc_data[0] and "error.class" not in self.agent_attributes:
             self._observe_exception(exc_data)
@@ -644,9 +656,27 @@ def current_trace():
 def get_trace_linking_metadata():
     trace = current_trace()
     if trace:
-        return trace._get_trace_linking_metadata()
-    else:
-        return {}
+        # Fast path: normal in-transaction behavior.
+        if trace.transaction:
+            return trace._get_trace_linking_metadata()
+
+    # Fallback: for asyncio tasks that were scheduled during an active trace but
+    # run after the originating transaction has ended, the task may still need
+    # stable trace/span ids for linking.
+    tc = trace_cache()
+    asyncio = tc.asyncio
+    if asyncio:
+        task = _current_task(asyncio)
+        if task is not None:
+            metadata = getattr(task, "_nr_trace_linking_metadata", None)
+            if metadata:
+                return dict(metadata)
+
+    # Last resort: at least provide the current span id if available.
+    if trace:
+        return {"span.id": trace.guid}
+
+    return {}
 
 
 def get_service_linking_metadata(application=None, settings=None):
@@ -680,9 +710,33 @@ def get_service_linking_metadata(application=None, settings=None):
 def get_linking_metadata(application=None):
     metadata = get_service_linking_metadata()
     trace = current_trace()
-    if trace:
+    if trace and trace.transaction:
         metadata.update(trace._get_trace_linking_metadata())
+    else:
+        # Same fallback semantics as get_trace_linking_metadata().
+        tc = trace_cache()
+        asyncio = tc.asyncio
+        if asyncio:
+            task = _current_task(asyncio)
+            if task is not None:
+                task_md = getattr(task, "_nr_trace_linking_metadata", None)
+                if task_md:
+                    metadata.update(task_md)
+
+        if trace:
+            metadata.setdefault("span.id", trace.guid)
     return metadata
+
+
+def record_exception(exc=None, value=None, tb=None, params=None, ignore_errors=None, application=None):
+    # Deprecation Warning
+    warnings.warn(
+        ("The record_exception function is deprecated. Please use the new api named notice_error instead."),
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+    notice_error(error=(exc, value, tb), attributes=params, ignore=ignore_errors, application=application)
 
 
 def notice_error(error=None, attributes=None, expected=None, ignore=None, status_code=None, application=None):

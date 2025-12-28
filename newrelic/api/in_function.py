@@ -12,9 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-paths:
-  .github/workflows/**/*.{yml,yaml}:
-    ignore:
-      # This runner exists, but is in beta and not known to actionlint.
-      - 'label "windows-11-arm" is unknown\. .+'
-      - 'property "check_run_id" is not defined.+'
+# Use of these from this module will be deprecated.
+
+from newrelic.common.object_wrapper import InFunctionWrapper, in_function, wrap_in_function  # noqa: F401

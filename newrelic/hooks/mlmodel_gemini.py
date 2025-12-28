@@ -14,7 +14,6 @@
 
 import logging
 import sys
-import time
 import uuid
 
 import google
@@ -227,7 +226,6 @@ def wrap_generate_content_sync(wrapped, instance, args, kwargs):
     transaction._add_agent_attribute("llm", True)
 
     completion_id = str(uuid.uuid4())
-    request_timestamp = int(1000.0 * time.time())
 
     ft = FunctionTrace(name=wrapped.__name__, group="Llm/completion/Gemini")
     ft.__enter__()
@@ -238,12 +236,12 @@ def wrap_generate_content_sync(wrapped, instance, args, kwargs):
     except Exception as exc:
         # In error cases, exit the function trace in _record_generation_error before recording the LLM error event so
         # that the duration is calculated correctly.
-        _record_generation_error(transaction, linking_metadata, completion_id, kwargs, ft, exc, request_timestamp)
+        _record_generation_error(transaction, linking_metadata, completion_id, kwargs, ft, exc)
         raise
 
     ft.__exit__(None, None, None)
 
-    _handle_generation_success(transaction, linking_metadata, completion_id, kwargs, ft, return_val, request_timestamp)
+    _handle_generation_success(transaction, linking_metadata, completion_id, kwargs, ft, return_val)
 
     return return_val
 
@@ -262,7 +260,6 @@ async def wrap_generate_content_async(wrapped, instance, args, kwargs):
     transaction._add_agent_attribute("llm", True)
 
     completion_id = str(uuid.uuid4())
-    request_timestamp = int(1000.0 * time.time())
 
     ft = FunctionTrace(name=wrapped.__name__, group="Llm/completion/Gemini")
     ft.__enter__()
@@ -272,17 +269,17 @@ async def wrap_generate_content_async(wrapped, instance, args, kwargs):
     except Exception as exc:
         # In error cases, exit the function trace in _record_generation_error before recording the LLM error event so
         # that the duration is calculated correctly.
-        _record_generation_error(transaction, linking_metadata, completion_id, kwargs, ft, exc, request_timestamp)
+        _record_generation_error(transaction, linking_metadata, completion_id, kwargs, ft, exc)
         raise
 
     ft.__exit__(None, None, None)
 
-    _handle_generation_success(transaction, linking_metadata, completion_id, kwargs, ft, return_val, request_timestamp)
+    _handle_generation_success(transaction, linking_metadata, completion_id, kwargs, ft, return_val)
 
     return return_val
 
 
-def _record_generation_error(transaction, linking_metadata, completion_id, kwargs, ft, exc, request_timestamp=None):
+def _record_generation_error(transaction, linking_metadata, completion_id, kwargs, ft, exc):
     span_id = linking_metadata.get("span.id")
     trace_id = linking_metadata.get("trace.id")
 
@@ -342,7 +339,6 @@ def _record_generation_error(transaction, linking_metadata, completion_id, kwarg
             "ingest_source": "Python",
             "duration": ft.duration * 1000,
             "error": True,
-            "timestamp": request_timestamp,
         }
         llm_metadata = _get_llm_attributes(transaction)
         error_chat_completion_dict.update(llm_metadata)
@@ -361,15 +357,12 @@ def _record_generation_error(transaction, linking_metadata, completion_id, kwarg
             request_model,
             llm_metadata,
             output_message_list,
-            request_timestamp,
         )
     except Exception:
         _logger.warning(RECORD_EVENTS_FAILURE_LOG_MESSAGE, exc_info=True)
 
 
-def _handle_generation_success(
-    transaction, linking_metadata, completion_id, kwargs, ft, return_val, request_timestamp=None
-):
+def _handle_generation_success(transaction, linking_metadata, completion_id, kwargs, ft, return_val):
     if not return_val:
         return
 
@@ -377,17 +370,13 @@ def _handle_generation_success(
         # Response objects are pydantic models so this function call converts the response into a dict
         response = return_val.model_dump() if hasattr(return_val, "model_dump") else return_val
 
-        _record_generation_success(
-            transaction, linking_metadata, completion_id, kwargs, ft, response, request_timestamp
-        )
+        _record_generation_success(transaction, linking_metadata, completion_id, kwargs, ft, response)
 
     except Exception:
         _logger.warning(RECORD_EVENTS_FAILURE_LOG_MESSAGE, exc_info=True)
 
 
-def _record_generation_success(
-    transaction, linking_metadata, completion_id, kwargs, ft, response, request_timestamp=None
-):
+def _record_generation_success(transaction, linking_metadata, completion_id, kwargs, ft, response):
     span_id = linking_metadata.get("span.id")
     trace_id = linking_metadata.get("trace.id")
     try:
@@ -447,7 +436,6 @@ def _record_generation_success(
             # message This value should be 2 in almost all cases since we will report a summary event for each
             # separate request (every input and output from the LLM)
             "response.number_of_messages": 1 + len(output_message_list),
-            "timestamp": request_timestamp,
         }
 
         llm_metadata = _get_llm_attributes(transaction)
@@ -464,7 +452,6 @@ def _record_generation_success(
             request_model,
             llm_metadata,
             output_message_list,
-            request_timestamp,
         )
     except Exception:
         _logger.warning(RECORD_EVENTS_FAILURE_LOG_MESSAGE, exc_info=True)
@@ -480,7 +467,6 @@ def create_chat_completion_message_event(
     request_model,
     llm_metadata,
     output_message_list,
-    request_timestamp=None,
 ):
     try:
         settings = transaction.settings or global_settings()
@@ -524,8 +510,6 @@ def create_chat_completion_message_event(
 
             if settings.ai_monitoring.record_content.enabled:
                 chat_completion_input_message_dict["content"] = input_message_content
-            if request_timestamp:
-                chat_completion_input_message_dict["timestamp"] = request_timestamp
 
             chat_completion_input_message_dict.update(llm_metadata)
 
@@ -564,8 +548,6 @@ def create_chat_completion_message_event(
 
                 if settings.ai_monitoring.record_content.enabled:
                     chat_completion_output_message_dict["content"] = message_content
-                if request_timestamp:
-                    chat_completion_output_message_dict["timestamp"] = request_timestamp
 
                 chat_completion_output_message_dict.update(llm_metadata)
 

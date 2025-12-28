@@ -37,7 +37,6 @@ text_generation_recorded_events = [
         {"type": "LlmChatCompletionSummary"},
         {
             "id": None,  # UUID that varies with each run
-            "timestamp": None,
             "llm.conversation_id": "my-awesome-id",
             "llm.foo": "bar",
             "span_id": None,
@@ -57,7 +56,6 @@ text_generation_recorded_events = [
         {"type": "LlmChatCompletionMessage"},
         {
             "id": None,
-            "timestamp": None,
             "llm.conversation_id": "my-awesome-id",
             "llm.foo": "bar",
             "span_id": None,
@@ -75,7 +73,6 @@ text_generation_recorded_events = [
         {"type": "LlmChatCompletionMessage"},
         {
             "id": None,
-            "timestamp": None,
             "llm.conversation_id": "my-awesome-id",
             "llm.foo": "bar",
             "span_id": None,

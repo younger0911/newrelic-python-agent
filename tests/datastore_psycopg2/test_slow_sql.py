@@ -132,7 +132,6 @@ def test_slow_sql_json(instance_enabled, distributed_tracing_enabled, payload_re
                 },
             }
 
-            headers = {"newrelic": payload}
-            transaction.accept_distributed_trace_headers(headers)
+            transaction.accept_distributed_trace_payload(payload)
 
     _test()

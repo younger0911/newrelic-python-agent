@@ -91,7 +91,7 @@ def wrap_headers_received(request_conn):
         except:
             pass
 
-        path, _sep, query = start_line.path.partition("?")
+        path, sep, query = start_line.path.partition("?")
 
         transaction = WebTransaction(
             application=application_instance(),
