@@ -18,10 +18,27 @@ from newrelic.core.trace_cache import trace_cache
 
 def remove_from_cache_callback(task):
     cache = trace_cache()
+
+    # If the trace bound to this task is the root span of a transaction whose
+    # completion has been deferred until other tasks finish, don't remove it
+    # yet. The deferred transaction exit needs that root span to remain in the
+    # cache so it can be completed later.
+    try:
+        trace = cache.get(id(task))
+        transaction = trace and trace.transaction
+        if transaction is not None and getattr(transaction, "_nr_asyncio_defer_exit_requested", False):
+            if not getattr(transaction, "_nr_asyncio_defer_exit_finalizing", False):
+                return
+    except Exception:
+        pass
+
     cache.task_stop(task)
 
 
 def wrap_create_task(task):
+    cache = trace_cache()
+    trace = cache.current_trace()
+
     # Avoid double-linking when multiple instrumentation paths apply.
     try:
         if getattr(task, "_nr_trace_cache_linked", False):
@@ -31,7 +48,17 @@ def wrap_create_task(task):
         # Some C-accelerated task types may not allow setting attributes.
         pass
 
-    trace_cache().task_start(task)
+    cache.task_start(task)
+
+    # Optional: link created tasks to the current transaction so the transaction
+    # can be kept alive until all such tasks complete.
+    try:
+        transaction = trace and trace.transaction
+        if transaction is not None:
+            transaction._nr_register_asyncio_task(task)
+    except Exception:
+        pass
+
     try:
         task.add_done_callback(remove_from_cache_callback)
     except Exception:
