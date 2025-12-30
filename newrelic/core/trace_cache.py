@@ -139,8 +139,17 @@ class TraceCache(MutableMapping):
 
     def task_start(self, task):
         trace = self.current_trace()
-        if trace:
-            self[id(task)] = trace
+        if not trace:
+            return
+
+        # The cache stores values as weakrefs. If we bind a short-lived trace
+        # (e.g. a FunctionTrace) to the task, it may be garbage collected before
+        # the task ever runs, causing the cache entry to disappear.
+        #
+        # Bind the task to the transaction root span instead, which has a
+        # lifetime at least as long as the transaction itself.
+        root = getattr(trace, "root", None) or trace
+        self[id(task)] = root
 
     def task_stop(self, task):
         self.pop(id(task), None)
