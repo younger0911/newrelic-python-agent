@@ -15,7 +15,7 @@
 import sys
 
 import pytest
-from testing_support.fixtures import override_generic_settings
+from testing_support.fixtures import override_application_settings, override_generic_settings
 from testing_support.validators.validate_function_not_called import validate_function_not_called
 from testing_support.validators.validate_transaction_metrics import validate_transaction_metrics
 
@@ -273,6 +273,78 @@ def test_two_transactions_with_loop_factory(trace, loop_factory):
 
     with asyncio.Runner(loop_factory=loop_factory) as runner:
         runner.run(_main())
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="loop_factory/asyncio.Runner is not available")
+@pytest.mark.parametrize("loop_factory", loop_factories())
+@validate_transaction_metrics("loop_create_task", background_task=True)
+def test_context_propagation_loop_create_task_with_loop_factory(loop_factory):
+    import asyncio
+
+    @background_task(name="loop_create_task")
+    async def main():
+        trace = current_trace()
+        assert trace is not None
+
+        loop = asyncio.get_running_loop()
+
+        async def child_task():
+            # This specifically verifies propagation for tasks created via
+            # loop.create_task(), which can differ for C-accelerated loops
+            # like uvloop.
+            assert current_trace() is trace
+
+        task = loop.create_task(child_task())
+        await task
+
+    with asyncio.Runner(loop_factory=loop_factory) as runner:
+        runner.run(main())
+
+
+@override_application_settings({"transaction_tracer.defer_transaction_completion_for_asyncio_tasks": True})
+@validate_transaction_metrics(
+    "deferred_exit_to_tasks",
+    background_task=True,
+    scoped_metrics=(("Function/child_after_parent_exit", 1),),
+)
+def test_defer_transaction_completion_until_tasks_finish(event_loop):
+    import asyncio
+
+    @background_task(name="deferred_exit_to_tasks")
+    async def parent():
+        expected = current_trace()
+        assert expected is not None
+
+        started = asyncio.Event()
+        allow_trace = asyncio.Event()
+
+        async def child():
+            # First ensure we started while parent txn is active.
+            assert current_trace() is expected
+            started.set()
+
+            # Wait until the parent coroutine has returned and __exit__ has been requested.
+            await allow_trace.wait()
+
+            # This should still be the same trace, even though the parent coroutine
+            # has completed.
+            assert current_trace() is expected
+            with FunctionTrace(name="child_after_parent_exit", terminal=True):
+                pass
+
+        task = asyncio.create_task(child())
+        await started.wait()
+        return task, allow_trace
+
+    task, allow_trace = event_loop.run_until_complete(parent())
+    allow_trace.set()
+    event_loop.run_until_complete(task)
+    # Allow any done callbacks (scheduled via call_soon) to run.
+    event_loop.run_until_complete(asyncio.sleep(0))
+
+    # The agent should have removed all traces from the cache since
+    # run_until_complete has terminated.
+    assert not trace_cache()
 
 
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="loop_factory/asyncio.Runner is not available")

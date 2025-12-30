@@ -18,18 +18,79 @@ from newrelic.core.trace_cache import trace_cache
 
 def remove_from_cache_callback(task):
     cache = trace_cache()
+
+    # If the trace bound to this task is the root span of a transaction whose
+    # completion has been deferred until other tasks finish, don't remove it
+    # yet. The deferred transaction exit needs that root span to remain in the
+    # cache so it can be completed later.
+    try:
+        trace = cache.get(id(task))
+        transaction = trace and trace.transaction
+        if transaction is not None and getattr(transaction, "_nr_asyncio_defer_exit_requested", False):
+            if not getattr(transaction, "_nr_asyncio_defer_exit_finalizing", False):
+                return
+    except Exception:
+        pass
+
     cache.task_stop(task)
 
 
 def wrap_create_task(task):
-    trace_cache().task_start(task)
-    task.add_done_callback(remove_from_cache_callback)
+    cache = trace_cache()
+    trace = cache.current_trace()
+
+    # Avoid double-linking when multiple instrumentation paths apply.
+    try:
+        if getattr(task, "_nr_trace_cache_linked", False):
+            return task
+        task._nr_trace_cache_linked = True
+    except Exception:
+        # Some C-accelerated task types may not allow setting attributes.
+        pass
+
+    cache.task_start(task)
+
+    # Optional: link created tasks to the current transaction so the transaction
+    # can be kept alive until all such tasks complete.
+    try:
+        transaction = trace and trace.transaction
+        if transaction is not None:
+            transaction._nr_register_asyncio_task(task)
+    except Exception:
+        pass
+
+    try:
+        task.add_done_callback(remove_from_cache_callback)
+    except Exception:
+        pass
     return task
 
 
 def _instrument_event_loop(loop):
-    if loop and hasattr(loop, "create_task") and not hasattr(loop.create_task, "__wrapped__"):
+    if not loop or not hasattr(loop, "create_task"):
+        return
+
+    # Prefer instance-level wrapping, but some event loops (e.g. uvloop) may
+    # not allow instance attribute assignment. In that case, fall back to
+    # wrapping the class method.
+    try:
+        if hasattr(loop.create_task, "__wrapped__"):
+            return
+    except Exception:
+        pass
+
+    try:
         wrap_out_function(loop, "create_task", wrap_create_task)
+        return
+    except Exception:
+        pass
+
+    try:
+        loop_cls = type(loop)
+        if hasattr(loop_cls, "create_task") and not hasattr(loop_cls.create_task, "__wrapped__"):
+            wrap_out_function(loop_cls, "create_task", wrap_create_task)
+    except Exception:
+        pass
 
 
 def _bind_set_event_loop(loop, *args, **kwargs):

@@ -203,6 +203,15 @@ class Transaction:
 
         self.stopped = False
 
+        # Optional asyncio task lifecycle tracking. When enabled via
+        # settings.transaction_tracer.defer_transaction_completion_for_asyncio_tasks,
+        # transaction completion can be deferred until all Tasks created
+        # within the transaction have completed.
+        self._nr_asyncio_linked_tasks = None
+        self._nr_asyncio_defer_exit_requested = False
+        self._nr_asyncio_defer_exit_exc_data = None
+        self._nr_asyncio_defer_exit_finalizing = False
+
         self._trace_node_count = 0
 
         self._errors = []
@@ -410,6 +419,64 @@ class Transaction:
 
         return self
 
+    def _nr_asyncio_defer_exit_enabled(self):
+        try:
+            return bool(
+                getattr(self._settings.transaction_tracer, "defer_transaction_completion_for_asyncio_tasks", False)
+            )
+        except Exception:
+            return False
+
+    def _nr_register_asyncio_task(self, task):
+        """Register an asyncio Task as belonging to this transaction."""
+        if not self._nr_asyncio_defer_exit_enabled():
+            return
+
+        if not self.enabled or not self._settings:
+            return
+
+        if self._nr_asyncio_linked_tasks is None:
+            self._nr_asyncio_linked_tasks = weakref.WeakSet()
+
+        try:
+            self._nr_asyncio_linked_tasks.add(task)
+        except Exception:
+            return
+
+        try:
+            task.add_done_callback(self._nr_asyncio_task_done)
+        except Exception:
+            pass
+
+    def _nr_asyncio_task_done(self, task):
+        # This runs as an event loop callback.
+        exc_data = None
+        try:
+            with self._transaction_lock:
+                if self._nr_asyncio_linked_tasks is not None:
+                    try:
+                        self._nr_asyncio_linked_tasks.discard(task)
+                    except Exception:
+                        pass
+
+                if (
+                    self._nr_asyncio_defer_exit_requested
+                    and not self._nr_asyncio_defer_exit_finalizing
+                    and (not self._nr_asyncio_linked_tasks or len(self._nr_asyncio_linked_tasks) == 0)
+                ):
+                    self._nr_asyncio_defer_exit_finalizing = True
+                    exc_data = self._nr_asyncio_defer_exit_exc_data or (None, None, None)
+        except Exception:
+            return
+
+        if exc_data is None:
+            return
+
+        try:
+            self.__exit__(*exc_data)
+        except Exception:
+            _logger.exception("Runtime instrumentation error. Exception occurred during deferred transaction exit.")
+
     def __exit__(self, exc, value, tb):
         # Bail out if the transaction is not enabled.
 
@@ -426,6 +493,38 @@ class Transaction:
 
         if exc is not None and value is not None and tb is not None:
             self.root_span.notice_error((exc, value, tb))
+
+        # Optional: defer completing the transaction until all linked asyncio
+        # Tasks have completed.
+        if not self._nr_asyncio_defer_exit_finalizing and self._nr_asyncio_defer_exit_enabled():
+            try:
+                with self._transaction_lock:
+                    # If we've already been asked to defer, do not defer again.
+                    if not self._nr_asyncio_defer_exit_requested:
+                        self._nr_asyncio_defer_exit_requested = True
+                        self._nr_asyncio_defer_exit_exc_data = (exc, value, tb)
+
+                    # Prune completed tasks so they don't keep the transaction open.
+                    if self._nr_asyncio_linked_tasks is not None:
+                        try:
+                            for t in list(self._nr_asyncio_linked_tasks):
+                                try:
+                                    done = getattr(t, "done", None)
+                                    if done and done():
+                                        self._nr_asyncio_linked_tasks.discard(t)
+                                except Exception:
+                                    continue
+                        except Exception:
+                            pass
+
+                    if self._nr_asyncio_linked_tasks is not None and len(self._nr_asyncio_linked_tasks) > 0:
+                        return
+
+                    # No linked tasks remain; proceed to finalize now.
+                    self._nr_asyncio_defer_exit_finalizing = True
+            except Exception:
+                # If anything goes wrong, fall back to normal exit behavior.
+                pass
 
         self._state = self.STATE_STOPPED
 

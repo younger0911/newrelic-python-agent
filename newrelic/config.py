@@ -368,6 +368,7 @@ def _process_configuration(section):
     _process_setting(section, "transaction_tracer.function_trace", "get", _map_split_strings)
     _process_setting(section, "transaction_tracer.generator_trace", "get", _map_split_strings)
     _process_setting(section, "transaction_tracer.top_n", "getint", None)
+    _process_setting(section, "transaction_tracer.defer_transaction_completion_for_asyncio_tasks", "getboolean", None)
     _process_setting(section, "transaction_tracer.attributes.enabled", "getboolean", None)
     _process_setting(section, "transaction_tracer.attributes.exclude", "get", _map_inc_excl_attributes)
     _process_setting(section, "transaction_tracer.attributes.include", "get", _map_inc_excl_attributes)

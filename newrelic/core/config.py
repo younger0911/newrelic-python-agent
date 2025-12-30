@@ -204,7 +204,14 @@ class ThreadProfilerSettings(Settings):
 
 
 class TransactionTracerSettings(Settings):
-    pass
+    # When enabled, defer completing a transaction when its top-level coroutine
+    # exits, until all asyncio Tasks created within the transaction have
+    # completed. This keeps the same transaction/trace context available in
+    # those tasks even after the framework response has returned.
+    #
+    # WARNING: This can significantly increase transaction duration and can
+    # lead to long-lived transactions if tasks do not terminate.
+    defer_transaction_completion_for_asyncio_tasks = False
 
 
 class TransactionTracerAttributesSettings(Settings):
@@ -880,6 +887,9 @@ _settings.transaction_tracer.explain_threshold = 0.5
 _settings.transaction_tracer.function_trace = []
 _settings.transaction_tracer.generator_trace = []
 _settings.transaction_tracer.top_n = 20
+_settings.transaction_tracer.defer_transaction_completion_for_asyncio_tasks = _environ_as_bool(
+    "NEW_RELIC_TRANSACTION_TRACER_DEFER_TRANSACTION_COMPLETION_FOR_ASYNCIO_TASKS", default=False
+)
 _settings.transaction_tracer.attributes.enabled = _environ_as_bool(
     "NEW_RELIC_TRANSACTION_TRACER_ATTRIBUTES_ENABLED", default=True
 )
